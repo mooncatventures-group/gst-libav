@@ -1,7 +1,7 @@
 
-Release notes for GStreamer libav Plugins 1.1.4
+Release notes for GStreamer libav Plugins 1.2.0
 
-The GStreamer team is proud to announce a new bug-fix release
+The GStreamer team is proud to announce a new feature release
 in the 1.x stable series of the
 core of the GStreamer streaming media framework.
 
@@ -36,12 +36,8 @@ contains a set of less supported plugins that haven't passed the
 
   
 
-Bugs fixed in this release
-     
-      * 158719 : [PVA] Support for PVA container format demuxing
-      * 697512 : avmux: Fails to register muxers with commas in the libav muxer name
-      * 705333 : h264parse : broken bytestream/nal = > avc/au conversion
-      * 706601 : Windows compilation fails since libav v9.5
+There were no bugs fixed in this release
+    
 
 ==== Download ====
 
@@ -78,8 +74,7 @@ subscribe to the gstreamer-devel list.
         
 Contributors to this release
     
-      * Hans de Goede
-      * Lubosz Sarnecki
+      * Edward Hervey
       * Sebastian Dröge
       * Tim-Philipp Müller
  
