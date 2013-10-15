@@ -1142,6 +1142,19 @@ gst_ffmpeg_codecid_to_caps (enum CodecID codec_id,
       caps =
           gst_ff_vid_caps_new (context, NULL, codec_id, encode, "video/x-h264",
           "alignment", G_TYPE_STRING, "au", NULL);
+      if (!encode) {
+        GValue arr = { 0, };
+        GValue item = { 0, };
+        g_value_init (&arr, GST_TYPE_LIST);
+        g_value_init (&item, G_TYPE_STRING);
+        g_value_set_string (&item, "avc");
+        gst_value_list_append_value (&arr, &item);
+        g_value_set_string (&item, "byte-stream");
+        gst_value_list_append_value (&arr, &item);
+        g_value_unset (&item);
+        gst_caps_set_value (caps, "stream-format", &arr);
+        g_value_unset (&arr);
+      }
       break;
 
     case AV_CODEC_ID_INDEO5:
@@ -1365,6 +1378,18 @@ gst_ffmpeg_codecid_to_caps (enum CodecID codec_id,
           "video/x-msvideocodec", "msvideoversion", G_TYPE_INT, 1, NULL);
       break;
 
+    case AV_CODEC_ID_MSS1:
+      caps =
+          gst_ff_vid_caps_new (context, NULL, codec_id, encode, "video/x-wmv",
+          "wmvversion", G_TYPE_INT, 1, "format", G_TYPE_STRING, "MSS1", NULL);
+      break;
+
+    case AV_CODEC_ID_MSS2:
+      caps =
+          gst_ff_vid_caps_new (context, NULL, codec_id, encode, "video/x-wmv",
+          "wmvversion", G_TYPE_INT, 3, "format", G_TYPE_STRING, "MSS2", NULL);
+      break;
+
     case AV_CODEC_ID_WMV3:
       caps =
           gst_ff_vid_caps_new (context, NULL, codec_id, encode, "video/x-wmv",
@@ -1420,6 +1445,12 @@ gst_ffmpeg_codecid_to_caps (enum CodecID codec_id,
       } else {
         gst_caps_set_simple (caps, "depth", GST_TYPE_INT_RANGE, 8, 32, NULL);
       }
+      break;
+
+    case AV_CODEC_ID_TSCC2:
+      caps =
+          gst_ff_vid_caps_new (context, NULL, codec_id, encode,
+          "video/x-tscc", "tsccversion", G_TYPE_INT, 2, NULL);
       break;
 
     case AV_CODEC_ID_KMVC:
@@ -2819,9 +2850,9 @@ gst_ffmpeg_caps_with_codecid (enum CodecID codec_id,
         gint halfpel_flag, thirdpel_flag, low_delay, unknown_svq3_flag;
         guint16 flags;
 
-        if (gst_structure_get_int (str, "halfpel_flag", &halfpel_flag) ||
-            gst_structure_get_int (str, "thirdpel_flag", &thirdpel_flag) ||
-            gst_structure_get_int (str, "low_delay", &low_delay) ||
+        if (gst_structure_get_int (str, "halfpel_flag", &halfpel_flag) &&
+            gst_structure_get_int (str, "thirdpel_flag", &thirdpel_flag) &&
+            gst_structure_get_int (str, "low_delay", &low_delay) &&
             gst_structure_get_int (str, "unknown_svq3_flag",
                 &unknown_svq3_flag)) {
           context->extradata = (guint8 *) av_mallocz (0x64);
