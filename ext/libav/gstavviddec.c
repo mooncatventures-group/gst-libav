@@ -258,6 +258,8 @@ gst_ffmpegviddec_init (GstFFMpegVidDec * ffmpegdec)
   ffmpegdec->direct_rendering = DEFAULT_DIRECT_RENDERING;
   ffmpegdec->debug_mv = DEFAULT_DEBUG_MV;
   ffmpegdec->max_threads = DEFAULT_MAX_THREADS;
+
+  gst_video_decoder_set_needs_format (GST_VIDEO_DECODER (ffmpegdec), TRUE);
 }
 
 static void
@@ -539,11 +541,12 @@ gst_ffmpegviddec_video_frame_new (GstVideoCodecFrame * frame)
 }
 
 static void
-gst_ffmpegviddec_video_frame_free (GstFFMpegVidDecVideoFrame * frame)
+gst_ffmpegviddec_video_frame_free (GstFFMpegVidDec * ffmpegdec,
+    GstFFMpegVidDecVideoFrame * frame)
 {
   if (frame->mapped)
     gst_video_frame_unmap (&frame->vframe);
-  gst_video_codec_frame_unref (frame->frame);
+  gst_video_decoder_release_frame (GST_VIDEO_DECODER (ffmpegdec), frame->frame);
   g_slice_free (GstFFMpegVidDecVideoFrame, frame);
 }
 
@@ -573,6 +576,11 @@ gst_ffmpegviddec_get_buffer (AVCodecContext * context, AVFrame * picture)
       picture->reordered_opaque);
   if (G_UNLIKELY (frame == NULL))
     goto no_frame;
+
+  /* now it has a buffer allocated, so it is real and will also
+   * be _released */
+  GST_VIDEO_CODEC_FRAME_FLAG_UNSET (frame,
+      GST_VIDEO_CODEC_FRAME_FLAG_DECODE_ONLY);
 
   if (G_UNLIKELY (frame->output_buffer != NULL))
     goto duplicate_frame;
@@ -768,7 +776,7 @@ gst_ffmpegviddec_release_buffer (AVCodecContext * context, AVFrame * picture)
   /* we remove the opaque data now */
   picture->opaque = NULL;
 
-  gst_ffmpegviddec_video_frame_free (frame);
+  gst_ffmpegviddec_video_frame_free (ffmpegdec, frame);
 
   /* zero out the reference in ffmpeg */
   for (i = 0; i < 4; i++) {
@@ -920,7 +928,8 @@ gst_ffmpegviddec_negotiate (GstFFMpegVidDec * ffmpegdec,
     out_info->interlace_mode = GST_VIDEO_INTERLACE_MODE_PROGRESSIVE;
 
   /* try to find a good framerate */
-  if (in_info->fps_d) {
+  if ((in_info->fps_d && in_info->fps_n) ||
+      GST_VIDEO_INFO_FLAG_IS_SET (in_info, GST_VIDEO_FLAG_VARIABLE_FPS)) {
     /* take framerate from input when it was specified (#313970) */
     fps_n = in_info->fps_n;
     fps_d = in_info->fps_d;
@@ -1251,6 +1260,41 @@ gst_ffmpegviddec_video_frame (GstFFMpegVidDec * ffmpegdec,
           GST_VIDEO_BUFFER_FLAG_INTERLACED);
   }
 
+  /* cleaning time */
+  /* so we decoded this frame, frames preceding it in decoding order
+   * that still do not have a buffer allocated seem rather useless,
+   * and can be discarded, due to e.g. misparsed bogus frame
+   * or non-keyframe in skipped decoding, ...
+   * In any case, not likely to be seen again, so discard those,
+   * before they pile up and/or mess with timestamping */
+  {
+    GList *l, *ol;
+    GstVideoDecoder *dec = GST_VIDEO_DECODER (ffmpegdec);
+    gboolean old = TRUE;
+
+    ol = l = gst_video_decoder_get_frames (dec);
+    while (l) {
+      GstVideoCodecFrame *tmp = l->data;
+
+      if (tmp == frame)
+        old = FALSE;
+
+      if (old && GST_VIDEO_CODEC_FRAME_IS_DECODE_ONLY (tmp)) {
+        GST_LOG_OBJECT (dec,
+            "discarding ghost frame %p (#%d) PTS:%" GST_TIME_FORMAT " DTS:%"
+            GST_TIME_FORMAT, tmp, tmp->system_frame_number,
+            GST_TIME_ARGS (tmp->pts), GST_TIME_ARGS (tmp->dts));
+        /* drop extra ref and remove from frame list */
+        gst_video_decoder_release_frame (dec, tmp);
+      } else {
+        /* drop extra ref we got */
+        gst_video_codec_frame_unref (tmp);
+      }
+      l = l->next;
+    }
+    g_list_free (ol);
+  }
+
   *ret =
       gst_video_decoder_finish_frame (GST_VIDEO_DECODER (ffmpegdec), out_frame);
 
@@ -1385,6 +1429,10 @@ gst_ffmpegviddec_handle_frame (GstVideoDecoder * decoder,
     GST_ERROR_OBJECT (ffmpegdec, "Failed to map buffer");
     return GST_FLOW_ERROR;
   }
+
+  /* treat frame as void until a buffer is requested for it */
+  GST_VIDEO_CODEC_FRAME_FLAG_SET (frame,
+      GST_VIDEO_CODEC_FRAME_FLAG_DECODE_ONLY);
 
   bdata = minfo.data;
   bsize = minfo.size;
