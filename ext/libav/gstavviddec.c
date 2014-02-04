@@ -46,6 +46,7 @@ GST_DEBUG_CATEGORY_EXTERN (GST_CAT_PERFORMANCE);
 #define DEFAULT_DIRECT_RENDERING	TRUE
 #define DEFAULT_DEBUG_MV		FALSE
 #define DEFAULT_MAX_THREADS		0
+#define DEFAULT_OUTPUT_CORRUPT		TRUE
 
 enum
 {
@@ -55,6 +56,7 @@ enum
   PROP_DIRECT_RENDERING,
   PROP_DEBUG_MV,
   PROP_MAX_THREADS,
+  PROP_OUTPUT_CORRUPT,
   PROP_LAST
 };
 
@@ -223,6 +225,10 @@ gst_ffmpegviddec_class_init (GstFFMpegVidDecClass * klass)
       g_param_spec_boolean ("debug-mv", "Debug motion vectors",
           "Whether libav should print motion vectors on top of the image",
           DEFAULT_DEBUG_MV, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+  g_object_class_install_property (gobject_class, PROP_OUTPUT_CORRUPT,
+      g_param_spec_boolean ("output-corrupt", "Output corrupt buffers",
+          "Whether libav should output frames even if corrupted",
+          DEFAULT_OUTPUT_CORRUPT, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
   caps = klass->in_plugin->capabilities;
   if (caps & (CODEC_CAP_FRAME_THREADS | CODEC_CAP_SLICE_THREADS)) {
@@ -258,6 +264,7 @@ gst_ffmpegviddec_init (GstFFMpegVidDec * ffmpegdec)
   ffmpegdec->direct_rendering = DEFAULT_DIRECT_RENDERING;
   ffmpegdec->debug_mv = DEFAULT_DEBUG_MV;
   ffmpegdec->max_threads = DEFAULT_MAX_THREADS;
+  ffmpegdec->output_corrupt = DEFAULT_OUTPUT_CORRUPT;
 
   gst_video_decoder_set_needs_format (GST_VIDEO_DECODER (ffmpegdec), TRUE);
 }
@@ -268,6 +275,7 @@ gst_ffmpegviddec_finalize (GObject * object)
   GstFFMpegVidDec *ffmpegdec = (GstFFMpegVidDec *) object;
 
   if (ffmpegdec->context != NULL) {
+    gst_ffmpeg_avcodec_close (ffmpegdec->context);
     av_free (ffmpegdec->context);
     ffmpegdec->context = NULL;
   }
@@ -277,6 +285,17 @@ gst_ffmpegviddec_finalize (GObject * object)
   G_OBJECT_CLASS (parent_class)->finalize (object);
 }
 
+static void
+gst_ffmpegviddec_context_set_flags (AVCodecContext * context, guint flags,
+    gboolean enable)
+{
+  g_return_if_fail (context != NULL);
+
+  if (enable)
+    context->flags |= flags;
+  else
+    context->flags &= ~flags;
+}
 
 /* with LOCK */
 static gboolean
@@ -347,6 +366,9 @@ gst_ffmpegviddec_open (GstFFMpegVidDec * ffmpegdec)
       GST_LOG_OBJECT (ffmpegdec, "Parser deactivated for format");
       break;
   }
+
+  gst_ffmpegviddec_context_set_flags (ffmpegdec->context,
+      CODEC_FLAG_OUTPUT_CORRUPT, ffmpegdec->output_corrupt);
 
   return TRUE;
 
@@ -524,6 +546,7 @@ open_failed:
 
 typedef struct
 {
+  GstFFMpegVidDec *ffmpegdec;
   GstVideoCodecFrame *frame;
   gboolean mapped;
   GstVideoFrame vframe;
@@ -531,12 +554,16 @@ typedef struct
 } GstFFMpegVidDecVideoFrame;
 
 static GstFFMpegVidDecVideoFrame *
-gst_ffmpegviddec_video_frame_new (GstVideoCodecFrame * frame)
+gst_ffmpegviddec_video_frame_new (GstFFMpegVidDec * ffmpegdec,
+    GstVideoCodecFrame * frame)
 {
   GstFFMpegVidDecVideoFrame *dframe;
 
   dframe = g_slice_new0 (GstFFMpegVidDecVideoFrame);
+  dframe->ffmpegdec = ffmpegdec;
   dframe->frame = frame;
+
+  GST_DEBUG_OBJECT (ffmpegdec, "new video frame %p", dframe);
 
   return dframe;
 }
@@ -545,11 +572,21 @@ static void
 gst_ffmpegviddec_video_frame_free (GstFFMpegVidDec * ffmpegdec,
     GstFFMpegVidDecVideoFrame * frame)
 {
+  GST_DEBUG_OBJECT (ffmpegdec, "free video frame %p", frame);
+
   if (frame->mapped)
     gst_video_frame_unmap (&frame->vframe);
   gst_video_decoder_release_frame (GST_VIDEO_DECODER (ffmpegdec), frame->frame);
   gst_buffer_replace (&frame->buffer, NULL);
   g_slice_free (GstFFMpegVidDecVideoFrame, frame);
+}
+
+static void
+dummy_free_buffer (void *opaque, uint8_t * data)
+{
+  GstFFMpegVidDecVideoFrame *frame = opaque;
+
+  gst_ffmpegviddec_video_frame_free (frame->ffmpegdec, frame);
 }
 
 /* called when ffmpeg wants us to allocate a buffer to write the decoded frame
@@ -590,7 +627,8 @@ gst_ffmpegviddec_get_buffer (AVCodecContext * context, AVFrame * picture)
     goto duplicate_frame;
 
   /* GstFFMpegVidDecVideoFrame receives the frame ref */
-  picture->opaque = dframe = gst_ffmpegviddec_video_frame_new (frame);
+  picture->opaque = dframe =
+      gst_ffmpegviddec_video_frame_new (ffmpegdec, frame);
 
   GST_DEBUG_OBJECT (ffmpegdec, "storing opaque %p", dframe);
 
@@ -694,10 +732,18 @@ invalid_frame:
 fallback:
   {
     int c;
+    gboolean first = TRUE;
     int ret = avcodec_default_get_buffer (context, picture);
 
-    for (c = 0; c < AV_NUM_DATA_POINTERS; c++)
+    for (c = 0; c < AV_NUM_DATA_POINTERS; c++) {
       ffmpegdec->stride[c] = picture->linesize[c];
+
+      if (picture->buf[c] == NULL && first) {
+        picture->buf[c] =
+            av_buffer_create (NULL, 0, dummy_free_buffer, dframe, 0);
+        first = FALSE;
+      }
+    }
 
     return ret;
   }
@@ -938,6 +984,23 @@ gst_ffmpegviddec_negotiate (GstFFMpegVidDec * ffmpegdec,
     out_info->interlace_mode = GST_VIDEO_INTERLACE_MODE_MIXED;
   else
     out_info->interlace_mode = GST_VIDEO_INTERLACE_MODE_PROGRESSIVE;
+
+  switch (context->chroma_sample_location) {
+    case 1:
+      out_info->chroma_site = GST_VIDEO_CHROMA_SITE_MPEG2;
+      break;
+    case 2:
+      out_info->chroma_site = GST_VIDEO_CHROMA_SITE_JPEG;
+      break;
+    case 3:
+      out_info->chroma_site = GST_VIDEO_CHROMA_SITE_DV;
+      break;
+    case 4:
+      out_info->chroma_site = GST_VIDEO_CHROMA_SITE_V_COSITED;
+      break;
+    default:
+      break;
+  }
 
   /* try to find a good framerate */
   if ((in_info->fps_d && in_info->fps_n) ||
@@ -1249,6 +1312,8 @@ gst_ffmpegviddec_video_frame (GstFFMpegVidDec * ffmpegdec,
       ffmpegdec->picture->repeat_pict);
   GST_DEBUG_OBJECT (ffmpegdec, "interlaced_frame:%d (current:%d)",
       ffmpegdec->picture->interlaced_frame, ffmpegdec->ctx_interlaced);
+  GST_DEBUG_OBJECT (ffmpegdec, "corrupted frame: %d",
+      ! !(ffmpegdec->picture->flags & AV_FRAME_FLAG_CORRUPT));
 
   if (G_UNLIKELY (ffmpegdec->picture->interlaced_frame !=
           ffmpegdec->ctx_interlaced)) {
@@ -1264,6 +1329,10 @@ gst_ffmpegviddec_video_frame (GstFFMpegVidDec * ffmpegdec,
 
   if (G_UNLIKELY (*ret != GST_FLOW_OK))
     goto no_output;
+
+  /* Mark corrupted frames as corrupted */
+  if (ffmpegdec->picture->flags & AV_FRAME_FLAG_CORRUPT)
+    GST_BUFFER_FLAG_SET (out_frame->output_buffer, GST_BUFFER_FLAG_CORRUPTED);
 
   if (ffmpegdec->ctx_interlaced) {
     /* set interlaced flags */
@@ -1550,6 +1619,7 @@ gst_ffmpegviddec_start (GstVideoDecoder * decoder)
   oclass = (GstFFMpegVidDecClass *) (G_OBJECT_GET_CLASS (ffmpegdec));
 
   GST_OBJECT_LOCK (ffmpegdec);
+  gst_ffmpeg_avcodec_close (ffmpegdec->context);
   if (avcodec_get_context_defaults3 (ffmpegdec->context, oclass->in_plugin) < 0) {
     GST_DEBUG_OBJECT (ffmpegdec, "Failed to set context defaults");
     GST_OBJECT_UNLOCK (ffmpegdec);
@@ -1669,8 +1739,8 @@ gst_ffmpegviddec_decide_allocation (GstVideoDecoder * decoder, GstQuery * query)
     avcodec_align_dimensions2 (ffmpegdec->context, &width, &height,
         linesize_align);
     edge =
-        ffmpegdec->context->
-        flags & CODEC_FLAG_EMU_EDGE ? 0 : avcodec_get_edge_width ();
+        ffmpegdec->
+        context->flags & CODEC_FLAG_EMU_EDGE ? 0 : avcodec_get_edge_width ();
     /* increase the size for the padding */
     width += edge << 1;
     height += edge << 1;
@@ -1776,6 +1846,9 @@ gst_ffmpegviddec_set_property (GObject * object,
     case PROP_MAX_THREADS:
       ffmpegdec->max_threads = g_value_get_int (value);
       break;
+    case PROP_OUTPUT_CORRUPT:
+      ffmpegdec->output_corrupt = g_value_get_boolean (value);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       break;
@@ -1803,6 +1876,9 @@ gst_ffmpegviddec_get_property (GObject * object,
       break;
     case PROP_MAX_THREADS:
       g_value_set_int (value, ffmpegdec->max_threads);
+      break;
+    case PROP_OUTPUT_CORRUPT:
+      g_value_set_boolean (value, ffmpegdec->output_corrupt);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -1921,6 +1997,7 @@ gst_ffmpegviddec_register (GstPlugin * plugin)
       case AV_CODEC_ID_MPEG4:
       case AV_CODEC_ID_MSMPEG4V3:
       case AV_CODEC_ID_H264:
+      case AV_CODEC_ID_HEVC:
       case AV_CODEC_ID_RV10:
       case AV_CODEC_ID_RV20:
       case AV_CODEC_ID_RV30:

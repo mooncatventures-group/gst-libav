@@ -120,7 +120,7 @@ static void gst_ffmpegmux_set_property (GObject * object, guint prop_id,
 static void gst_ffmpegmux_get_property (GObject * object, guint prop_id,
     GValue * value, GParamSpec * pspec);
 
-static GstCaps *gst_ffmpegmux_get_id_caps (enum CodecID *id_list);
+static GstCaps *gst_ffmpegmux_get_id_caps (enum AVCodecID *id_list);
 static void gst_ffmpeg_mux_simple_caps_set_int_list (GstCaps * caps,
     const gchar * field, guint num, const gint * values);
 
@@ -193,7 +193,7 @@ gst_ffmpegmux_base_init (gpointer g_class)
   GstPadTemplate *videosinktempl, *audiosinktempl, *srctempl;
   AVOutputFormat *in_plugin;
   GstCaps *srccaps, *audiosinkcaps, *videosinkcaps;
-  enum CodecID *video_ids = NULL, *audio_ids = NULL;
+  enum AVCodecID *video_ids = NULL, *audio_ids = NULL;
   gchar *longname, *description;
   const char *replacement;
   gboolean is_formatter;
@@ -254,6 +254,10 @@ gst_ffmpegmux_base_init (gpointer g_class)
     const gint rates[] = { 44100, 22050, 11025 };
 
     gst_ffmpeg_mux_simple_caps_set_int_list (audiosinkcaps, "rate", 3, rates);
+  } else if (strcmp (in_plugin->name, "dv") == 0) {
+    gst_caps_set_simple (audiosinkcaps,
+        "rate", G_TYPE_INT, 48000, "channels", G_TYPE_INT, 2, NULL);
+
   } else if (strcmp (in_plugin->name, "gif") == 0) {
     if (videosinkcaps)
       gst_caps_unref (videosinkcaps);
@@ -474,7 +478,7 @@ gst_ffmpegmux_setcaps (GstPad * pad, GstCaps * caps)
   collect_pad = (GstFFMpegMuxPad *) gst_pad_get_element_private (pad);
 
   st = ffmpegmux->context->streams[collect_pad->padnum];
-  av_opt_set_int (&ffmpegmux->context, "preload", ffmpegmux->preload, 0);
+  av_opt_set_int (ffmpegmux->context, "preload", ffmpegmux->preload, 0);
   ffmpegmux->context->max_delay = ffmpegmux->max_delay;
 
   /* for the format-specific guesses, we'll go to
@@ -819,7 +823,7 @@ gst_ffmpegmux_change_state (GstElement * element, GstStateChange transition)
 }
 
 static GstCaps *
-gst_ffmpegmux_get_id_caps (enum CodecID *id_list)
+gst_ffmpegmux_get_id_caps (enum AVCodecID *id_list)
 {
   GstCaps *caps, *t;
   gint i;

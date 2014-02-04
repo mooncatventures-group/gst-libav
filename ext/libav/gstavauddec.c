@@ -150,9 +150,11 @@ gst_ffmpegauddec_finalize (GObject * object)
 {
   GstFFMpegAudDec *ffmpegdec = (GstFFMpegAudDec *) object;
 
-  if (ffmpegdec->context != NULL)
+  if (ffmpegdec->context != NULL) {
+    gst_ffmpeg_avcodec_close (ffmpegdec->context);
     av_free (ffmpegdec->context);
-  ffmpegdec->context = NULL;
+    ffmpegdec->context = NULL;
+  }
 
   G_OBJECT_CLASS (parent_class)->finalize (object);
 }
@@ -199,6 +201,7 @@ gst_ffmpegauddec_start (GstAudioDecoder * decoder)
   oclass = (GstFFMpegAudDecClass *) (G_OBJECT_GET_CLASS (ffmpegdec));
 
   GST_OBJECT_LOCK (ffmpegdec);
+  gst_ffmpeg_avcodec_close (ffmpegdec->context);
   if (avcodec_get_context_defaults3 (ffmpegdec->context, oclass->in_plugin) < 0) {
     GST_DEBUG_OBJECT (ffmpegdec, "Failed to set context defaults");
     GST_OBJECT_UNLOCK (ffmpegdec);
@@ -461,7 +464,7 @@ gst_ffmpegauddec_audio_frame (GstFFMpegAudDec * ffmpegdec,
     GstBuffer ** outbuf, GstFlowReturn * ret)
 {
   gint len = -1;
-  gint have_data = AVCODEC_MAX_AUDIO_FRAME_SIZE;
+  gint have_data = 0;
   AVPacket packet;
   AVFrame frame;
 
@@ -475,7 +478,7 @@ gst_ffmpegauddec_audio_frame (GstFFMpegAudDec * ffmpegdec,
   GST_DEBUG_OBJECT (ffmpegdec,
       "Decode audio: len=%d, have_data=%d", len, have_data);
 
-  if (len >= 0 && have_data > 0) {
+  if (len >= 0 && have_data) {
     BufferInfo *buffer_info = frame.opaque;
     gint nsamples, channels, byte_per_sample;
     gsize output_size;
@@ -569,7 +572,8 @@ gst_ffmpegauddec_audio_frame (GstFFMpegAudDec * ffmpegdec,
       gst_buffer_fill (*outbuf, 0, frame.data[0], output_size);
     }
 
-    GST_DEBUG_OBJECT (ffmpegdec, "Buffer created. Size: %d", have_data);
+    GST_DEBUG_OBJECT (ffmpegdec, "Buffer created. Size: %" G_GSIZE_FORMAT,
+        output_size);
 
     /* Reorder channels to the GStreamer channel order */
     if (ffmpegdec->needs_reorder) {
@@ -578,6 +582,10 @@ gst_ffmpegauddec_audio_frame (GstFFMpegAudDec * ffmpegdec,
           ffmpegdec->info.channels, ffmpegdec->ffmpeg_layout,
           ffmpegdec->info.position);
     }
+
+    /* Mark corrupted frames as corrupted */
+    if (frame.flags & AV_FRAME_FLAG_CORRUPT)
+      GST_BUFFER_FLAG_SET (*outbuf, GST_BUFFER_FLAG_CORRUPTED);
   } else {
     *outbuf = NULL;
   }
@@ -908,9 +916,6 @@ gst_ffmpegauddec_register (GstPlugin * plugin)
          */
       case AV_CODEC_ID_SIPR:
         rank = GST_RANK_SECONDARY;
-        break;
-      case AV_CODEC_ID_MP3:
-        rank = GST_RANK_NONE;
         break;
       default:
         rank = GST_RANK_MARGINAL;

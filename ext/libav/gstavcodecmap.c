@@ -255,7 +255,7 @@ gst_ffmpeg_video_set_pix_fmts (GstCaps * caps, const enum AVPixelFormat *fmts)
  */
 static GstCaps *
 gst_ff_vid_caps_new (AVCodecContext * context, AVCodec * codec,
-    enum CodecID codec_id, gboolean encode, const char *mimetype,
+    enum AVCodecID codec_id, gboolean encode, const char *mimetype,
     const char *fieldname, ...)
 {
   GstCaps *caps = NULL;
@@ -512,7 +512,7 @@ gst_ffmpeg_audio_set_sample_fmts (GstCaps * caps,
  */
 static GstCaps *
 gst_ff_aud_caps_new (AVCodecContext * context, AVCodec * codec,
-    enum CodecID codec_id, gboolean encode, const char *mimetype,
+    enum AVCodecID codec_id, gboolean encode, const char *mimetype,
     const char *fieldname, ...)
 {
   GstCaps *caps = NULL;
@@ -726,7 +726,7 @@ gst_ff_aud_caps_new (AVCodecContext * context, AVCodec * codec,
  */
 
 GstCaps *
-gst_ffmpeg_codecid_to_caps (enum CodecID codec_id,
+gst_ffmpeg_codecid_to_caps (enum AVCodecID codec_id,
     AVCodecContext * context, gboolean encode)
 {
   GstCaps *caps = NULL;
@@ -828,12 +828,10 @@ gst_ffmpeg_codecid_to_caps (enum CodecID codec_id,
           break;
       }
 
-      /* FIXME: context->sub_id must be filled in during decoding */
       caps =
           gst_ff_vid_caps_new (context, NULL, codec_id, encode,
           "video/x-pn-realvideo", "rmversion", G_TYPE_INT, version, NULL);
       if (context) {
-        gst_caps_set_simple (caps, "format", G_TYPE_INT, context->sub_id, NULL);
         if (context->extradata_size >= 8) {
           gst_caps_set_simple (caps,
               "subformat", G_TYPE_INT, GST_READ_UINT32_BE (context->extradata),
@@ -1197,6 +1195,27 @@ gst_ffmpeg_codecid_to_caps (enum CodecID codec_id,
       }
       break;
 
+    case AV_CODEC_ID_HEVC:
+      caps =
+          gst_ff_vid_caps_new (context, NULL, codec_id, encode, "video/x-h265",
+          "alignment", G_TYPE_STRING, "au", NULL);
+      if (!encode) {
+        GValue arr = { 0, };
+        GValue item = { 0, };
+        g_value_init (&arr, GST_TYPE_LIST);
+        g_value_init (&item, G_TYPE_STRING);
+        g_value_set_string (&item, "hvc1");
+        gst_value_list_append_value (&arr, &item);
+        g_value_set_string (&item, "hev1");
+        gst_value_list_append_value (&arr, &item);
+        g_value_set_string (&item, "byte-stream");
+        gst_value_list_append_value (&arr, &item);
+        g_value_unset (&item);
+        gst_caps_set_value (caps, "stream-format", &arr);
+        g_value_unset (&arr);
+      }
+      break;
+
     case AV_CODEC_ID_INDEO5:
       caps =
           gst_ff_vid_caps_new (context, NULL, codec_id, encode, "video/x-indeo",
@@ -1438,7 +1457,22 @@ gst_ffmpeg_codecid_to_caps (enum CodecID codec_id,
     case AV_CODEC_ID_VC1:
       caps =
           gst_ff_vid_caps_new (context, NULL, codec_id, encode, "video/x-wmv",
-          "wmvversion", G_TYPE_INT, 3, "format", G_TYPE_STRING, "WVC1", NULL);
+          "wmvversion", G_TYPE_INT, 3, NULL);
+      if (!context && !encode) {
+        GValue arr = { 0, };
+        GValue item = { 0, };
+
+        g_value_init (&arr, GST_TYPE_LIST);
+        g_value_init (&item, G_TYPE_STRING);
+        g_value_set_string (&item, "WVC1");
+        gst_value_list_append_value (&arr, &item);
+        g_value_set_string (&item, "WMVA");
+        gst_value_list_append_and_take_value (&arr, &item);
+        gst_caps_set_value (caps, "format", &arr);
+        g_value_unset (&arr);
+      } else {
+        gst_caps_set_simple (caps, "format", G_TYPE_STRING, "WVC1", NULL);
+      }
       break;
     case AV_CODEC_ID_QDM2:
       caps =
@@ -1667,7 +1701,6 @@ gst_ffmpeg_codecid_to_caps (enum CodecID codec_id,
     case AV_CODEC_ID_FLIC:
     case AV_CODEC_ID_VMDVIDEO:
     case AV_CODEC_ID_VMDAUDIO:
-    case AV_CODEC_ID_SNOW:
     case AV_CODEC_ID_VIXL:
     case AV_CODEC_ID_QPEG:
     case AV_CODEC_ID_PGMYUV:
@@ -2118,7 +2151,7 @@ gst_ffmpeg_codecid_to_caps (enum CodecID codec_id,
 
 static GstCaps *
 gst_ffmpeg_pixfmt_to_caps (enum PixelFormat pix_fmt, AVCodecContext * context,
-    enum CodecID codec_id)
+    enum AVCodecID codec_id)
 {
   GstCaps *caps = NULL;
   GstVideoFormat format;
@@ -2179,7 +2212,7 @@ gst_ffmpeg_smpfmt_to_audioformat (enum AVSampleFormat sample_fmt)
 
 static GstCaps *
 gst_ffmpeg_smpfmt_to_caps (enum AVSampleFormat sample_fmt,
-    AVCodecContext * context, AVCodec * codec, enum CodecID codec_id)
+    AVCodecContext * context, AVCodec * codec, enum AVCodecID codec_id)
 {
   GstCaps *caps = NULL;
   GstAudioFormat format;
@@ -2216,7 +2249,7 @@ caps_has_field (GstCaps * caps, const gchar * field)
 
 GstCaps *
 gst_ffmpeg_codectype_to_audio_caps (AVCodecContext * context,
-    enum CodecID codec_id, gboolean encode, AVCodec * codec)
+    enum AVCodecID codec_id, gboolean encode, AVCodec * codec)
 {
   GstCaps *caps = NULL;
 
@@ -2244,7 +2277,7 @@ gst_ffmpeg_codectype_to_audio_caps (AVCodecContext * context,
 
 GstCaps *
 gst_ffmpeg_codectype_to_video_caps (AVCodecContext * context,
-    enum CodecID codec_id, gboolean encode, AVCodec * codec)
+    enum AVCodecID codec_id, gboolean encode, AVCodec * codec)
 {
   GstCaps *caps;
 
@@ -2799,7 +2832,7 @@ full_copy:
  */
 
 void
-gst_ffmpeg_caps_with_codecid (enum CodecID codec_id,
+gst_ffmpeg_caps_with_codecid (enum AVCodecID codec_id,
     enum AVMediaType codec_type, const GstCaps * caps, AVCodecContext * context)
 {
   GstStructure *str;
@@ -2939,18 +2972,6 @@ gst_ffmpeg_caps_with_codecid (enum CodecID codec_id,
     }
       break;
 
-    case AV_CODEC_ID_RV10:
-    case AV_CODEC_ID_RV20:
-    case AV_CODEC_ID_RV30:
-    case AV_CODEC_ID_RV40:
-    {
-      gint format;
-
-      if (gst_structure_get_int (str, "format", &format))
-        context->sub_id = format;
-
-      break;
-    }
     case AV_CODEC_ID_COOK:
     case AV_CODEC_ID_RA_288:
     case AV_CODEC_ID_RA_144:
@@ -3174,14 +3195,14 @@ gst_ffmpeg_formatid_to_caps (const gchar * format_name)
 
 gboolean
 gst_ffmpeg_formatid_get_codecids (const gchar * format_name,
-    enum CodecID ** video_codec_list, enum CodecID ** audio_codec_list,
+    enum AVCodecID ** video_codec_list, enum AVCodecID ** audio_codec_list,
     AVOutputFormat * plugin)
 {
-  static enum CodecID tmp_vlist[] = {
+  static enum AVCodecID tmp_vlist[] = {
     AV_CODEC_ID_NONE,
     AV_CODEC_ID_NONE
   };
-  static enum CodecID tmp_alist[] = {
+  static enum AVCodecID tmp_alist[] = {
     AV_CODEC_ID_NONE,
     AV_CODEC_ID_NONE
   };
@@ -3189,12 +3210,12 @@ gst_ffmpeg_formatid_get_codecids (const gchar * format_name,
   GST_LOG ("format_name : %s", format_name);
 
   if (!strcmp (format_name, "mp4")) {
-    static enum CodecID mp4_video_list[] = {
+    static enum AVCodecID mp4_video_list[] = {
       AV_CODEC_ID_MPEG4, AV_CODEC_ID_H264,
       AV_CODEC_ID_MJPEG,
       AV_CODEC_ID_NONE
     };
-    static enum CodecID mp4_audio_list[] = {
+    static enum AVCodecID mp4_audio_list[] = {
       AV_CODEC_ID_AAC, AV_CODEC_ID_MP3,
       AV_CODEC_ID_NONE
     };
@@ -3202,12 +3223,12 @@ gst_ffmpeg_formatid_get_codecids (const gchar * format_name,
     *video_codec_list = mp4_video_list;
     *audio_codec_list = mp4_audio_list;
   } else if (!strcmp (format_name, "mpeg")) {
-    static enum CodecID mpeg_video_list[] = { AV_CODEC_ID_MPEG1VIDEO,
+    static enum AVCodecID mpeg_video_list[] = { AV_CODEC_ID_MPEG1VIDEO,
       AV_CODEC_ID_MPEG2VIDEO,
       AV_CODEC_ID_H264,
       AV_CODEC_ID_NONE
     };
-    static enum CodecID mpeg_audio_list[] = { AV_CODEC_ID_MP1,
+    static enum AVCodecID mpeg_audio_list[] = { AV_CODEC_ID_MP1,
       AV_CODEC_ID_MP2,
       AV_CODEC_ID_MP3,
       AV_CODEC_ID_NONE
@@ -3216,10 +3237,10 @@ gst_ffmpeg_formatid_get_codecids (const gchar * format_name,
     *video_codec_list = mpeg_video_list;
     *audio_codec_list = mpeg_audio_list;
   } else if (!strcmp (format_name, "dvd")) {
-    static enum CodecID mpeg_video_list[] = { AV_CODEC_ID_MPEG2VIDEO,
+    static enum AVCodecID mpeg_video_list[] = { AV_CODEC_ID_MPEG2VIDEO,
       AV_CODEC_ID_NONE
     };
-    static enum CodecID mpeg_audio_list[] = { AV_CODEC_ID_MP2,
+    static enum AVCodecID mpeg_audio_list[] = { AV_CODEC_ID_MP2,
       AV_CODEC_ID_AC3,
       AV_CODEC_ID_DTS,
       AV_CODEC_ID_PCM_S16BE,
@@ -3229,12 +3250,12 @@ gst_ffmpeg_formatid_get_codecids (const gchar * format_name,
     *video_codec_list = mpeg_video_list;
     *audio_codec_list = mpeg_audio_list;
   } else if (!strcmp (format_name, "mpegts")) {
-    static enum CodecID mpegts_video_list[] = { AV_CODEC_ID_MPEG1VIDEO,
+    static enum AVCodecID mpegts_video_list[] = { AV_CODEC_ID_MPEG1VIDEO,
       AV_CODEC_ID_MPEG2VIDEO,
       AV_CODEC_ID_H264,
       AV_CODEC_ID_NONE
     };
-    static enum CodecID mpegts_audio_list[] = { AV_CODEC_ID_MP2,
+    static enum AVCodecID mpegts_audio_list[] = { AV_CODEC_ID_MP2,
       AV_CODEC_ID_MP3,
       AV_CODEC_ID_AC3,
       AV_CODEC_ID_DTS,
@@ -3245,28 +3266,28 @@ gst_ffmpeg_formatid_get_codecids (const gchar * format_name,
     *video_codec_list = mpegts_video_list;
     *audio_codec_list = mpegts_audio_list;
   } else if (!strcmp (format_name, "vob")) {
-    static enum CodecID vob_video_list[] =
+    static enum AVCodecID vob_video_list[] =
         { AV_CODEC_ID_MPEG2VIDEO, AV_CODEC_ID_NONE };
-    static enum CodecID vob_audio_list[] = { AV_CODEC_ID_MP2, AV_CODEC_ID_AC3,
+    static enum AVCodecID vob_audio_list[] = { AV_CODEC_ID_MP2, AV_CODEC_ID_AC3,
       AV_CODEC_ID_DTS, AV_CODEC_ID_NONE
     };
 
     *video_codec_list = vob_video_list;
     *audio_codec_list = vob_audio_list;
   } else if (!strcmp (format_name, "flv")) {
-    static enum CodecID flv_video_list[] =
+    static enum AVCodecID flv_video_list[] =
         { AV_CODEC_ID_FLV1, AV_CODEC_ID_NONE };
-    static enum CodecID flv_audio_list[] =
+    static enum AVCodecID flv_audio_list[] =
         { AV_CODEC_ID_MP3, AV_CODEC_ID_NONE };
 
     *video_codec_list = flv_video_list;
     *audio_codec_list = flv_audio_list;
   } else if (!strcmp (format_name, "asf")) {
-    static enum CodecID asf_video_list[] =
+    static enum AVCodecID asf_video_list[] =
         { AV_CODEC_ID_WMV1, AV_CODEC_ID_WMV2, AV_CODEC_ID_MSMPEG4V3,
       AV_CODEC_ID_NONE
     };
-    static enum CodecID asf_audio_list[] =
+    static enum AVCodecID asf_audio_list[] =
         { AV_CODEC_ID_WMAV1, AV_CODEC_ID_WMAV2, AV_CODEC_ID_MP3,
       AV_CODEC_ID_NONE
     };
@@ -3274,22 +3295,22 @@ gst_ffmpeg_formatid_get_codecids (const gchar * format_name,
     *video_codec_list = asf_video_list;
     *audio_codec_list = asf_audio_list;
   } else if (!strcmp (format_name, "dv")) {
-    static enum CodecID dv_video_list[] =
+    static enum AVCodecID dv_video_list[] =
         { AV_CODEC_ID_DVVIDEO, AV_CODEC_ID_NONE };
-    static enum CodecID dv_audio_list[] =
+    static enum AVCodecID dv_audio_list[] =
         { AV_CODEC_ID_PCM_S16LE, AV_CODEC_ID_NONE };
 
     *video_codec_list = dv_video_list;
     *audio_codec_list = dv_audio_list;
   } else if (!strcmp (format_name, "mov")) {
-    static enum CodecID mov_video_list[] = {
+    static enum AVCodecID mov_video_list[] = {
       AV_CODEC_ID_SVQ1, AV_CODEC_ID_SVQ3, AV_CODEC_ID_MPEG4,
       AV_CODEC_ID_H263, AV_CODEC_ID_H263P,
       AV_CODEC_ID_H264, AV_CODEC_ID_DVVIDEO,
       AV_CODEC_ID_MJPEG,
       AV_CODEC_ID_NONE
     };
-    static enum CodecID mov_audio_list[] = {
+    static enum AVCodecID mov_audio_list[] = {
       AV_CODEC_ID_PCM_MULAW, AV_CODEC_ID_PCM_ALAW, AV_CODEC_ID_ADPCM_IMA_QT,
       AV_CODEC_ID_MACE3, AV_CODEC_ID_MACE6, AV_CODEC_ID_AAC,
       AV_CODEC_ID_AMR_NB, AV_CODEC_ID_AMR_WB,
@@ -3300,11 +3321,11 @@ gst_ffmpeg_formatid_get_codecids (const gchar * format_name,
     *video_codec_list = mov_video_list;
     *audio_codec_list = mov_audio_list;
   } else if ((!strcmp (format_name, "3gp") || !strcmp (format_name, "3g2"))) {
-    static enum CodecID tgp_video_list[] = {
+    static enum AVCodecID tgp_video_list[] = {
       AV_CODEC_ID_MPEG4, AV_CODEC_ID_H263, AV_CODEC_ID_H263P, AV_CODEC_ID_H264,
       AV_CODEC_ID_NONE
     };
-    static enum CodecID tgp_audio_list[] = {
+    static enum AVCodecID tgp_audio_list[] = {
       AV_CODEC_ID_AMR_NB, AV_CODEC_ID_AMR_WB,
       AV_CODEC_ID_AAC,
       AV_CODEC_ID_NONE
@@ -3313,20 +3334,20 @@ gst_ffmpeg_formatid_get_codecids (const gchar * format_name,
     *video_codec_list = tgp_video_list;
     *audio_codec_list = tgp_audio_list;
   } else if (!strcmp (format_name, "mmf")) {
-    static enum CodecID mmf_audio_list[] = {
+    static enum AVCodecID mmf_audio_list[] = {
       AV_CODEC_ID_ADPCM_YAMAHA, AV_CODEC_ID_NONE
     };
     *video_codec_list = NULL;
     *audio_codec_list = mmf_audio_list;
   } else if (!strcmp (format_name, "amr")) {
-    static enum CodecID amr_audio_list[] = {
+    static enum AVCodecID amr_audio_list[] = {
       AV_CODEC_ID_AMR_NB, AV_CODEC_ID_AMR_WB,
       AV_CODEC_ID_NONE
     };
     *video_codec_list = NULL;
     *audio_codec_list = amr_audio_list;
   } else if (!strcmp (format_name, "gif")) {
-    static enum CodecID gif_image_list[] = {
+    static enum AVCodecID gif_image_list[] = {
       AV_CODEC_ID_RAWVIDEO, AV_CODEC_ID_NONE
     };
     *video_codec_list = gif_image_list;
@@ -3339,11 +3360,11 @@ gst_ffmpeg_formatid_get_codecids (const gchar * format_name,
     *video_codec_list = tmp_vlist;
     *audio_codec_list = tmp_alist;
   } else if ((!strcmp (format_name, "pva"))) {
-    static enum CodecID tgp_video_list[] = {
+    static enum AVCodecID tgp_video_list[] = {
       AV_CODEC_ID_MPEG2VIDEO,
       AV_CODEC_ID_NONE
     };
-    static enum CodecID tgp_audio_list[] = {
+    static enum AVCodecID tgp_audio_list[] = {
       AV_CODEC_ID_MP2,
       AV_CODEC_ID_NONE
     };
@@ -3365,10 +3386,10 @@ gst_ffmpeg_formatid_get_codecids (const gchar * format_name,
  * optional extra info
  */
 
-enum CodecID
+enum AVCodecID
 gst_ffmpeg_caps_to_codecid (const GstCaps * caps, AVCodecContext * context)
 {
-  enum CodecID id = AV_CODEC_ID_NONE;
+  enum AVCodecID id = AV_CODEC_ID_NONE;
   const gchar *mimetype;
   const GstStructure *structure;
   gboolean video = FALSE, audio = FALSE;        /* we want to be sure! */
@@ -3863,6 +3884,9 @@ gst_ffmpeg_caps_to_codecid (const GstCaps * caps, AVCodecContext * context)
     audio = TRUE;
   } else if (!strcmp (mimetype, "video/x-h264")) {
     id = AV_CODEC_ID_H264;
+    video = TRUE;
+  } else if (!strcmp (mimetype, "video/x-h265")) {
+    id = AV_CODEC_ID_HEVC;
     video = TRUE;
   } else if (!strcmp (mimetype, "video/x-flash-video")) {
     gint flvversion = 0;
